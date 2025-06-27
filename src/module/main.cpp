@@ -84,6 +84,10 @@ std::unordered_map<std::string, std::unique_ptr<ViamOBDevice>> devices_by_serial
 
 std::mutex frame_set_by_serial_mu;
 std::unordered_map<std::string, std::shared_ptr<ob::FrameSet>> frame_set_by_serial;
+
+std::mutex serial_by_resource_names_mu;
+std::unordered_map<std::string, std::vector<std::string>> serial_by_resource_names;
+
 // GLOBALS END
 
 // HELPERS BEGIN
@@ -248,7 +252,7 @@ std::shared_ptr<ob::Config> createHwD2CAlignConfig(std::shared_ptr<ob::Pipeline>
     return nullptr;
 }
 
-void startDevice(std::string serialNumber) {
+void startDevice(std::string serialNumber, std::string deviceName) {
     VIAM_SDK_LOG(info) << service_name << ": starting device " << serialNumber;
     std::lock_guard<std::mutex> lock(devices_by_serial_mu);
 
@@ -264,6 +268,21 @@ void startDevice(std::string serialNumber) {
         buffer << service_name << ": unable to start already started device" << serialNumber;
         throw std::invalid_argument(buffer.str());
     }
+
+    std::lock_guard<std::mutex> lock2(serial_by_resource_names_mu);
+    std::vector<std::string> devices;
+    devices.push_back(deviceName);
+    serial_by_resource_names[serialNumber] = devices;
+
+    VIAM_SDK_LOG(info) << "HERE ADDING" << deviceName;
+
+    for (const auto& pair : serial_by_resource_names) {
+        VIAM_SDK_LOG(info) << "serial number:" << pair.first;
+        for (const auto& name : pair.second) {
+            VIAM_SDK_LOG(info) << "resource name: " << name;
+        }
+    }
+    // VIAM_SDK_LOG(info) << "serial by resource names" << serial_by_resource_names[serialNumber] << "/n";
 
     auto frameCallback = [serialNumber](std::shared_ptr<ob::FrameSet> frameSet) {
         if (frameSet->getCount() != 2) {
@@ -292,6 +311,7 @@ void startDevice(std::string serialNumber) {
 }
 
 void stopDevice(std::string serialNumber) {
+    VIAM_SDK_LOG(info) << "stopping device";
     std::lock_guard<std::mutex> lock(devices_by_serial_mu);
 
     if (auto search = devices_by_serial.find(serialNumber); search == devices_by_serial.end()) {
@@ -307,6 +327,7 @@ void stopDevice(std::string serialNumber) {
 
     my_dev->pipe->stop();
     my_dev->started = false;
+    VIAM_SDK_LOG(info) << "done stopping device";
 }
 
 void stopStreams() {
@@ -374,7 +395,8 @@ class Orbbec : public vsdk::Camera, public vsdk::Reconfigurable {
    public:
     Orbbec(vsdk::Dependencies deps, vsdk::ResourceConfig cfg) : Camera(cfg.name()), state_(configure_(std::move(deps), std::move(cfg))) {
         VIAM_SDK_LOG(info) << "Orbbec constructor start " << state_->serial_number;
-        startDevice(state_->serial_number);
+        VIAM_SDK_LOG(info) << "RESOURCE NAME" << cfg.name();
+        startDevice(state_->serial_number, state_->resourceName);
         VIAM_SDK_LOG(info) << "Orbbec constructor end " << state_->serial_number;
     }
 
@@ -404,7 +426,7 @@ class Orbbec : public vsdk::Camera, public vsdk::Reconfigurable {
             state_ = configure_(deps, cfg);
             new_serial_number = state_->serial_number;
         }
-        startDevice(new_serial_number);
+        startDevice(new_serial_number, cfg.name());
         VIAM_SDK_LOG(info) << "Orbbec reconfigure end";
     }
 
@@ -639,8 +661,9 @@ class Orbbec : public vsdk::Camera, public vsdk::Reconfigurable {
    private:
     struct state_ {
         std::string serial_number;
+        std::string resourceName;
 
-        explicit state_(std::string serial_number) : serial_number(serial_number) {}
+        explicit state_(std::string serial_number, std::string resourceName) : serial_number(serial_number), resourceName(resourceName) {}
     };
     std::mutex state_mu_;
     std::unique_ptr<struct state_> state_;
@@ -660,7 +683,7 @@ class Orbbec : public vsdk::Camera, public vsdk::Reconfigurable {
 
         serial_number_from_config = *serial_val;
 
-        auto state = std::make_unique<struct state_>(serial_number_from_config);
+        auto state = std::make_unique<struct state_>(serial_number_from_config, configuration.name());
 
         return state;
     }
@@ -716,6 +739,7 @@ void deviceChangedCallback(const std::shared_ptr<ob::DeviceList> removedList, co
                              "in devices_by_serial\n";
                 continue;
             }
+            VIAM_SDK_LOG(info) << serial_number;
             devices_by_serial.erase(serial_number);
         }
 
