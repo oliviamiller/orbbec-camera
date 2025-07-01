@@ -79,11 +79,22 @@ struct raw_camera_image {
 // STRUCTS END
 
 // GLOBALS BEGIN
-std::mutex devices_by_serial_mu;
-std::unordered_map<std::string, std::unique_ptr<ViamOBDevice>> devices_by_serial;
+// std::mutex devices_by_serial_mu;
+// std::unordered_map<std::string, std::unique_ptr<ViamOBDevice>> devices_by_serial;
 
 std::mutex frame_set_by_serial_mu;
 std::unordered_map<std::string, std::shared_ptr<ob::FrameSet>> frame_set_by_serial;
+
+struct devices_by_serial_map {
+    std::unordered_map<std::string, std::unique_ptr<ViamOBDevice>> map;
+    std::mutex mu;
+};
+
+devices_by_serial_map& get_devices_by_serial() {
+    static devices_by_serial_map devices_by_serial;
+    return devices_by_serial;
+}
+
 // GLOBALS END
 
 // HELPERS BEGIN
@@ -250,15 +261,16 @@ std::shared_ptr<ob::Config> createHwD2CAlignConfig(std::shared_ptr<ob::Pipeline>
 
 void startDevice(std::string serialNumber) {
     VIAM_SDK_LOG(info) << service_name << ": starting device " << serialNumber;
-    std::lock_guard<std::mutex> lock(devices_by_serial_mu);
+    devices_by_serial_map& devices_by_serial = get_devices_by_serial();
+    std::lock_guard<std::mutex> lock(devices_by_serial.mu);
 
-    if (auto search = devices_by_serial.find(serialNumber); search == devices_by_serial.end()) {
+    if (auto search = devices_by_serial.map.find(serialNumber); search == devices_by_serial.map.end()) {
         std::ostringstream buffer;
         buffer << service_name << ": unable to start undetected device" << serialNumber;
         throw std::invalid_argument(buffer.str());
     }
 
-    std::unique_ptr<ViamOBDevice>& my_dev = devices_by_serial[serialNumber];
+    std::unique_ptr<ViamOBDevice>& my_dev = devices_by_serial.map[serialNumber];
     if (my_dev->started) {
         std::ostringstream buffer;
         buffer << service_name << ": unable to start already started device" << serialNumber;
@@ -292,14 +304,15 @@ void startDevice(std::string serialNumber) {
 }
 
 void stopDevice(std::string serialNumber) {
-    std::lock_guard<std::mutex> lock(devices_by_serial_mu);
+    devices_by_serial_map& devices_by_serial = get_devices_by_serial();
+    std::lock_guard<std::mutex> lock(devices_by_serial.mu);
 
-    if (auto search = devices_by_serial.find(serialNumber); search == devices_by_serial.end()) {
+    if (auto search = devices_by_serial.map.find(serialNumber); search == devices_by_serial.map.end()) {
         VIAM_SDK_LOG(error) << service_name << ": unable to stop undetected device " << serialNumber;
         return;
     }
 
-    std::unique_ptr<ViamOBDevice>& my_dev = devices_by_serial[serialNumber];
+    std::unique_ptr<ViamOBDevice>& my_dev = devices_by_serial.map[serialNumber];
     if (!my_dev->started) {
         VIAM_SDK_LOG(error) << service_name << ": unable to stop device that is not currently running " << serialNumber;
         return;
@@ -455,14 +468,15 @@ class Orbbec : public vsdk::Camera, public vsdk::Reconfigurable {
 
             OBCameraIntrinsic props;
             {
-                const std::lock_guard<std::mutex> lock(devices_by_serial_mu);
-                if (auto search = devices_by_serial.find(serial_number); search == devices_by_serial.end()) {
+                devices_by_serial_map& devices_by_serial = get_devices_by_serial();
+                std::lock_guard<std::mutex> lock(devices_by_serial.mu);
+                if (auto search = devices_by_serial.map.find(serial_number); search == devices_by_serial.map.end()) {
                     std::ostringstream buffer;
                     buffer << service_name << ": device with serial number " << serial_number << " is no longer connected";
                     throw std::invalid_argument(buffer.str());
                 }
 
-                std::unique_ptr<ViamOBDevice>& my_dev = devices_by_serial[serial_number];
+                std::unique_ptr<ViamOBDevice>& my_dev = devices_by_serial.map[serial_number];
                 if (!my_dev->started) {
                     std::ostringstream buffer;
                     buffer << service_name << ": device with serial number " << serial_number << " is not longer started";
@@ -600,12 +614,13 @@ class Orbbec : public vsdk::Camera, public vsdk::Reconfigurable {
             unsigned char* depthData = (unsigned char*)depth->getData();
 
             // NOTE: UNDER LOCK
-            std::lock_guard<std::mutex> lock(devices_by_serial_mu);
-            if (auto search = devices_by_serial.find(serial_number); search == devices_by_serial.end()) {
+            devices_by_serial_map& devices_by_serial = get_devices_by_serial();
+            std::lock_guard<std::mutex> lock(devices_by_serial.mu);
+            if (auto search = devices_by_serial.map.find(serial_number); search == devices_by_serial.map.end()) {
                 throw std::invalid_argument("device is not connected");
             }
 
-            std::unique_ptr<ViamOBDevice>& my_dev = devices_by_serial[serial_number];
+            std::unique_ptr<ViamOBDevice>& my_dev = devices_by_serial.map[serial_number];
             if (!my_dev->started) {
                 throw std::invalid_argument("device is not started");
             }
@@ -676,7 +691,8 @@ void registerDevice(std::string serialNumber, std::shared_ptr<ob::Device> dev) {
     pointCloudFilter->setCreatePointFormat(OB_FORMAT_RGB_POINT);
 
     {
-        std::lock_guard<std::mutex> lock(devices_by_serial_mu);
+        devices_by_serial_map& devices_by_serial = get_devices_by_serial();
+        std::lock_guard<std::mutex> lock(devices_by_serial.mu);
         std::unique_ptr<ViamOBDevice> my_dev = std::make_unique<ViamOBDevice>();
 
         my_dev->pipe = pipe;
@@ -686,7 +702,7 @@ void registerDevice(std::string serialNumber, std::shared_ptr<ob::Device> dev) {
         my_dev->align = align;
         my_dev->config = config;
 
-        devices_by_serial[serialNumber] = std::move(my_dev);
+        devices_by_serial.map[serialNumber] = std::move(my_dev);
     }
 }
 
@@ -698,15 +714,16 @@ void deviceChangedCallback(const std::shared_ptr<ob::DeviceList> removedList, co
             if (i == 0) {
                 VIAM_SDK_LOG(info) << " Devices Removed:\n";
             }
-            std::lock_guard<std::mutex> lock(devices_by_serial_mu);
+            devices_by_serial_map& devices_by_serial = get_devices_by_serial();
+            std::lock_guard<std::mutex> lock(devices_by_serial.mu);
             std::string serial_number = removedList->serialNumber(i);
-            if (auto search = devices_by_serial.find(serial_number); search == devices_by_serial.end()) {
+            if (auto search = devices_by_serial.map.find(serial_number); search == devices_by_serial.map.end()) {
                 std::cerr << serial_number
                           << "was in removedList of device change callback but not "
                              "in devices_by_serial\n";
                 continue;
             }
-            devices_by_serial.erase(serial_number);
+            devices_by_serial.map.erase(serial_number);
         }
 
         devCount = deviceList->getCount();
@@ -783,7 +800,14 @@ int serve(int argc, char** argv) try {
 
 }  // namespace
 
+void cleanup_maps() {
+    VIAM_SDK_LOG(info) << "cleaning up map";
+    auto& devices_by_serial = get_devices_by_serial();
+    devices_by_serial.map.clear();
+}
+
 int main(int argc, char* argv[]) {
+    std::atexit(cleanup_maps);
     std::cout << "Orbbec C++ SDK version: " << ob::Version::getMajor() << "." << ob::Version::getMinor() << "." << ob::Version::getPatch()
               << "\n";
 
