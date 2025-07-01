@@ -53,8 +53,13 @@ struct PointXYZRGB {
 };
 
 struct ViamOBDevice {
+    ViamOBDevice() {
+        std::cout << "ViamOBDevice created\n";
+    }
+
     ~ViamOBDevice() {
-        VIAM_SDK_LOG(info) << "deleting ViamOBDevice " << serial_number << "\n";
+        std::cout << "viamobdevice destructor\n";
+        // VIAM_SDK_LOG(info) << "deleting ViamOBDevice " << serial_number << "\n";
     }
     std::string serial_number;
     std::shared_ptr<ob::Device> device;
@@ -92,6 +97,7 @@ struct devices_by_serial_map {
 
 devices_by_serial_map& get_devices_by_serial() {
     static devices_by_serial_map devices_by_serial;
+    std::lock_guard<std::mutex> lock(devices_by_serial.mu);
     return devices_by_serial;
 }
 
@@ -800,14 +806,7 @@ int serve(int argc, char** argv) try {
 
 }  // namespace
 
-void cleanup_maps() {
-    VIAM_SDK_LOG(info) << "cleaning up map";
-    auto& devices_by_serial = get_devices_by_serial();
-    devices_by_serial.map.clear();
-}
-
 int main(int argc, char* argv[]) {
-    std::atexit(cleanup_maps);
     std::cout << "Orbbec C++ SDK version: " << ob::Version::getMajor() << "." << ob::Version::getMinor() << "." << ob::Version::getPatch()
               << "\n";
 
