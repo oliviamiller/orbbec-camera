@@ -19,6 +19,9 @@ elif  [[ ${OS} == "linux" ]]; then
     echo "Detected Linux $ARCH"
     # NOTE: this is written under the assumption that it will be built in canon
     sudo apt -y update && sudo apt -y upgrade && sudo apt install -y cmake python3.11 python3.11-venv wget
+  elif [[ ${OS} == "Windows_NT" ]]; then
+    echo "Detected windows"
+    exit 1
 else
     echo "Unsupported OS: ${OS}"
     exit 1
